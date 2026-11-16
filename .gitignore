@@ -1,0 +1,46 @@
+# Environment & Secrets
+.env
+.env.local
+*.env
+
+# Virtual Environments
+.venv/
+venv/
+env/
+ENV/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Data & Indexes
+data/
+*.db
+*.sqlite
+*.sqlite3
+chromadb/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# Distribution
+dist/
+build/
+*.egg-info/
