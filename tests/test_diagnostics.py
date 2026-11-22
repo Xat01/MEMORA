@@ -209,9 +209,14 @@ class TestConfiguration:
 
     def test_missing_vault_path_fail(self, temp_dir):
         """Test missing VAULT_PATH fails."""
-        # Create config with None vault_path to trigger the check
+        # Create a valid vault for the test
+        vault_dir = temp_dir / "test_vault"
+        vault_dir.mkdir()
+        (vault_dir / ".obsidian").mkdir()
+
+        # Create config with valid vault, then override to empty
         config = MemoraConfig(
-            vault_path=Path("."),  # This will resolve to current dir which exists
+            vault_path=vault_dir,
             chroma_path=temp_dir / "chromadb",
             sqlite_path=temp_dir / "memora.db",
         )
@@ -224,11 +229,19 @@ class TestConfiguration:
 
     def test_nonexistent_vault_path_fail(self, temp_dir):
         """Test nonexistent VAULT_PATH fails."""
+        # Create a valid vault first
+        vault_dir = temp_dir / "test_vault"
+        vault_dir.mkdir()
+        (vault_dir / ".obsidian").mkdir()
+
+        # Create config with valid vault, then override to nonexistent
         config = MemoraConfig(
-            vault_path=temp_dir / "nonexistent",
+            vault_path=vault_dir,
             chroma_path=temp_dir / "chromadb",
             sqlite_path=temp_dir / "memora.db",
         )
+        # Override to nonexistent path
+        config.vault_path = temp_dir / "nonexistent"
         doctor = Doctor(config=config)
         doctor._check_configuration()
         assert doctor.report.checks[-1].status == CheckStatus.FAIL

@@ -60,6 +60,7 @@ dev = [
 ]
 
 [project.scripts]
+memora = "memora.cli:app"
 memora-index = "memora.ingestion.__main__:main"
 memora-memory = "memora.memory.__main__:main"
 memora-server = "memora.mcp.server:main"

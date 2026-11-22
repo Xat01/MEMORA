@@ -1,0 +1,101 @@
+# MEMORA Docker Compose
+# Dual-profile: http (MEMORA HTTP), ollama (containerized Ollama)
+# STDIO mode uses `docker run` directly (no compose service)
+
+services:
+  # ─── Optional: Containerized Ollama ───
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["ollama"]
+    container_name: memora-ollama
+    restart: unless-stopped
+    volumes:
+      - ollama-models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    networks:
+      - memora-network
+
+  # ─── MEMORA HTTP Service ───
+  memora-http:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    profiles: ["http"]
+    container_name: memora-http
+    restart: unless-stopped
+    entrypoint: ["memora-server", "http", "0.0.0.0", "8080"]
+    env_file:
+      - .env.docker
+    environment:
+      # Vault & Storage
+      - VAULT_PATH=/vault
+      - CHROMA_PATH=/data/chromadb
+      - SQLITE_PATH=/data/memora.db
+      # Ollama Configuration (explicit, no auto-detection)
+      # OLLAMA_MODE: "host" (default) or "container" — set in .env.docker
+      - OLLAMA_MODE=${OLLAMA_MODE:-host}
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
+      - OLLAMA_HOST_FALLBACK=${OLLAMA_HOST_FALLBACK:-http://ollama:11434}
+      # Embedding
+      - EMBEDDING_MODEL=nomic-embed-text
+      - EMBEDDING_DIMENSIONS=768
+      # MCP HTTP
+      - MCP_TRANSPORT=http
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=8080
+      # Logging
+      - LOG_LEVEL=INFO
+      - LOG_FILE=/logs/memora.log
+    volumes:
+      - ${VAULT_PATH}:/vault:ro
+      - chromadb-data:/data/chromadb
+      - sqlite-data:/data
+      - logs-data:/logs
+    ports:
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      # Use Python for healthcheck to avoid curl dependency in minimal image
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health/ready', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    user: "1000:1000"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/tmp
+    depends_on:
+      ollama:
+        condition: service_healthy
+        required: false
+    networks:
+      - memora-network
+
+volumes:
+  chromadb-data:
+  sqlite-data:
+  logs-data:
+  ollama-models:
+
+networks:
+  memora-network:
+    name: memora-network
+    driver: bridge

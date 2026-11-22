@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Distribution
+dist/
+build/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Runtime data (mounted as volumes)
+data/
+logs/
+*.db
+*.db-journal
+
+# Environment
+.env
+.env.*
+!.env.example
+!.env.docker
+
+# Git
+.git/
+.gitignore
+
+# Testing
+tests/
+*.pytest_cache/
+
+# Documentation (optional - keep for reference)
+# docs/
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+.dockerignore

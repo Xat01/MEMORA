@@ -21,7 +21,7 @@ try:
 except ImportError:
     mcp = None
 
-from memora.config import get_config, MemoraConfig
+from memora.config import get_config, MemoraConfig, resolve_vault_path, discover_obsidian_vaults
 from memora.storage.metadata_store import MetadataStore
 from memora.storage.vector_store import VectorStore
 from memora.embeddings.ollama_provider import OllamaProvider
@@ -126,12 +126,29 @@ class Doctor:
     """
 
     def __init__(self, config: Optional[MemoraConfig] = None, verbose: bool = False):
-        self.config = config or get_config()
+        self.config = config
         self.verbose = verbose
+        self.config_error: Optional[str] = None
+
+        # Try to load config, but don't fail if it's invalid
+        if self.config is None:
+            try:
+                from memora.config import get_config
+                self.config = get_config()
+            except Exception as e:
+                self.config_error = str(e)
+                self.config = None
+
+        config_path = "unknown"
+        if self.config and self.config.vault_path:
+            config_path = str(self.config.vault_path)
+        elif self.config_error:
+            config_path = f"error: {self.config_error}"
+
         self.report = DoctorReport(
             python_version=platform.python_version(),
             platform=platform.platform(),
-            config_path=str(self.config.vault_path) if self.config else "unknown"
+            config_path=config_path
         )
 
     def run_all(self) -> DoctorReport:
@@ -227,12 +244,31 @@ class Doctor:
 
     def _check_configuration(self) -> None:
         """Check configuration validity."""
+        if self.config_error:
+            self.report.add_check(CheckResult(
+                name="Configuration",
+                status=CheckStatus.FAIL,
+                message=f"Configuration load failed: {self.config_error}",
+                details={"error": self.config_error},
+                remediation="Set VAULT_PATH in .env or ensure an Obsidian vault is discoverable"
+            ))
+            return
+
+        if not self.config:
+            self.report.add_check(CheckResult(
+                name="Configuration",
+                status=CheckStatus.FAIL,
+                message="Configuration not available",
+                remediation="Fix configuration loading"
+            ))
+            return
+
         issues = []
         warnings = []
 
-        # Check vault path is set
-        if not self.config or not self.config.vault_path:
-            issues.append("VAULT_PATH not configured")
+        # Check vault path
+        if not self.config.vault_path:
+            issues.append("VAULT_PATH not configured and no vault auto-discovered")
         else:
             vault_str = str(self.config.vault_path).strip()
             if vault_str == "" or vault_str == ".":
@@ -269,7 +305,7 @@ class Doctor:
                 status=CheckStatus.FAIL,
                 message="; ".join(issues),
                 details={"issues": issues, "warnings": warnings},
-                remediation="Fix VAULT_PATH in .env and ensure paths are valid"
+                remediation="Set VAULT_PATH in .env or ensure an Obsidian vault is discoverable"
             ))
         elif warnings:
             self.report.add_check(CheckResult(
@@ -285,7 +321,7 @@ class Doctor:
                 status=CheckStatus.PASS,
                 message="Configuration valid",
                 details={
-                    "vault_path": str(self.config.vault_path) if self.config else "unknown",
+                    "vault_path": str(self.config.vault_path) if self.config and self.config.vault_path else "auto-discovered",
                     "chroma_path": str(self.config.chroma_path) if self.config else "unknown",
                     "sqlite_path": str(self.config.sqlite_path) if self.config else "unknown",
                     "embedding_model": self.config.embedding_model if self.config else "unknown",
@@ -295,6 +331,8 @@ class Doctor:
 
     def _create_ollama_provider(self):
         """Create Ollama provider (overridable for testing)."""
+        if not self.config:
+            return None
         return OllamaProvider(
             host=self.config.ollama_host,
             model=self.config.embedding_model
@@ -313,6 +351,15 @@ class Doctor:
 
         try:
             provider = self._create_ollama_provider()
+            if not provider:
+                self.report.add_check(CheckResult(
+                    name="Ollama Connectivity",
+                    status=CheckStatus.FAIL,
+                    message="Could not create Ollama provider",
+                    remediation="Fix configuration first"
+                ))
+                return
+
             healthy = provider.health_check()
             if healthy:
                 self.report.add_check(CheckResult(
@@ -351,6 +398,15 @@ class Doctor:
 
         try:
             provider = self._create_ollama_provider()
+            if not provider:
+                self.report.add_check(CheckResult(
+                    name="Embedding Model",
+                    status=CheckStatus.FAIL,
+                    message="Could not create Ollama provider",
+                    remediation="Fix configuration first"
+                ))
+                return
+
             model_info = provider.get_model_info()
             model_name = model_info.get("name", self.config.embedding_model)
 
@@ -392,6 +448,15 @@ class Doctor:
 
     def _check_chromadb(self) -> None:
         """Check ChromaDB accessibility and collection."""
+        if not self.config:
+            self.report.add_check(CheckResult(
+                name="ChromaDB",
+                status=CheckStatus.FAIL,
+                message="Configuration not available",
+                remediation="Fix configuration first"
+            ))
+            return
+
         try:
             vector_store = VectorStore(persist_path=str(self.config.chroma_path))
             info = vector_store.get_collection_info()
@@ -435,6 +500,15 @@ class Doctor:
 
     def _check_sqlite(self) -> None:
         """Check SQLite database accessibility and integrity."""
+        if not self.config:
+            self.report.add_check(CheckResult(
+                name="SQLite",
+                status=CheckStatus.FAIL,
+                message="Configuration not available",
+                remediation="Fix configuration first"
+            ))
+            return
+
         try:
             metadata_store = MetadataStore(db_path=self.config.sqlite_path)
 
@@ -488,8 +562,26 @@ class Doctor:
 
     def _check_obsidian_vault(self) -> None:
         """Check Obsidian vault validity and accessibility."""
+        if not self.config:
+            self.report.add_check(CheckResult(
+                name="Obsidian Vault",
+                status=CheckStatus.FAIL,
+                message="Configuration not available",
+                remediation="Fix configuration first"
+            ))
+            return
+
         try:
             vault_path = self.config.vault_path
+
+            if not vault_path:
+                self.report.add_check(CheckResult(
+                    name="Obsidian Vault",
+                    status=CheckStatus.FAIL,
+                    message="No vault path configured and no vault auto-discovered",
+                    remediation="Set VAULT_PATH in .env or ensure an Obsidian vault is discoverable"
+                ))
+                return
 
             # Check .obsidian directory
             obsidian_dir = vault_path / ".obsidian"
@@ -550,7 +642,7 @@ class Doctor:
                 name="Obsidian Vault",
                 status=CheckStatus.FAIL,
                 message=f"Vault check failed: {e}",
-                details={"vault_path": str(self.config.vault_path), "error": str(e)},
+                details={"vault_path": str(self.config.vault_path) if self.config.vault_path else "none", "error": str(e)},
                 remediation="Check VAULT_PATH in .env and permissions"
             ))
 
@@ -567,6 +659,14 @@ class Doctor:
 
         try:
             provider = self._create_ollama_provider()
+            if not provider:
+                self.report.add_check(CheckResult(
+                    name="Embedding Pipeline",
+                    status=CheckStatus.FAIL,
+                    message="Could not create Ollama provider",
+                    remediation="Fix configuration first"
+                ))
+                return
 
             # Test embedding generation
             result = provider.generate_embeddings(["test embedding pipeline"])

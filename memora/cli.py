@@ -20,6 +20,15 @@ from memora.storage.vector_store import VectorStore
 from memora.embeddings.ollama_provider import OllamaProvider
 from memora.embeddings.base import EmbeddingProvider, EmbeddingResult
 from memora.diagnostics import run_doctor, DoctorReport, CheckStatus
+from memora.lifecycle import (
+    lifecycle_app,
+    orchestrate_start,
+    orchestrate_stop,
+    orchestrate_restart,
+    orchestrate_purge,
+    get_status,
+)
+from memora.lifecycle.cli import discover_project_root, load_config
 
 app = typer.Typer(
     name="memora",
@@ -27,6 +36,117 @@ app = typer.Typer(
     add_completion=False,
 )
 console = Console()
+
+# Add lifecycle subcommands (start, stop, restart, status, doctor, logs, version)
+app.add_typer(lifecycle_app, name="lifecycle", help="Deployment lifecycle management")
+
+
+def _get_project_and_config():
+    """Get project root and config for lifecycle commands."""
+    project_root = discover_project_root()
+    config = load_config(project_root)
+    return project_root, config
+
+
+@app.callback(invoke_without_command=True)
+def main(
+    ctx: typer.Context,
+    start: bool = typer.Option(False, "--start", help="Start MEMORA with full preflight validation"),
+    stop: bool = typer.Option(False, "--stop", help="Stop MEMORA services gracefully (preserves volumes)"),
+    restart: bool = typer.Option(False, "--restart", help="Restart MEMORA services with health verification"),
+    status: bool = typer.Option(False, "--status", help="Show comprehensive MEMORA status"),
+    doctor: bool = typer.Option(False, "--doctor", help="Run system diagnostics"),
+    logs: bool = typer.Option(False, "--logs", help="Show MEMORA service logs"),
+    version: bool = typer.Option(False, "--version", help="Show MEMORA version information"),
+    purge: bool = typer.Option(False, "--purge", help="PURGE MEMORA — DELETE all persistent volumes (DANGEROUS)"),
+    confirm_destroy: bool = typer.Option(False, "--confirm-destroy", help="Confirm destructive purge (required with --purge)"),
+    skip_preflight: bool = typer.Option(False, "--skip-preflight", help="Skip preflight validation (with --start)"),
+    no_build: bool = typer.Option(False, "--no-build", help="Skip image build (with --start)"),
+    follow: bool = typer.Option(False, "--follow", "-f", help="Follow log output (with --logs)"),
+    tail: int = typer.Option(100, "--tail", "-n", help="Number of lines to show (with --logs)"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed output (with --doctor)"),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON (with --doctor)"),
+    stop_dependencies: bool = typer.Option(False, "--stop-dependencies", help="Also stop MEMORA-owned dependencies (with --stop)"),
+):
+    """
+    MEMORA — Local-First Personal Knowledge Infrastructure for AI
+
+    Lifecycle commands (also available as subcommands):
+      --start       Start MEMORA with full preflight validation
+      --stop        Stop MEMORA services gracefully (preserves volumes)
+      --restart     Restart MEMORA services with health verification
+      --status      Show comprehensive MEMORA status
+      --doctor      Run system diagnostics
+      --logs        Show MEMORA service logs
+      --version     Show MEMORA version information
+      --purge       PURGE MEMORA — DELETE all persistent volumes (DANGEROUS, requires --confirm-destroy)
+    """
+    # If a subcommand was invoked, let it handle
+    if ctx.invoked_subcommand:
+        return
+
+    # Handle lifecycle flags
+    # Get project root and config for all lifecycle operations
+    project_root, config = _get_project_and_config()
+
+    if start:
+        # Monkey-patch build if --no-build
+        if no_build:
+            from memora.lifecycle.cli import ComposeManager
+            original_build = ComposeManager.build
+            ComposeManager.build = lambda self: True
+        exit_code = orchestrate_start(project_root, config, skip_preflight)
+        raise typer.Exit(code=exit_code)
+
+    if stop:
+        exit_code = orchestrate_stop(project_root, config, stop_dependencies=stop_dependencies)
+        raise typer.Exit(code=exit_code)
+
+    if purge:
+        exit_code = orchestrate_purge(project_root, config, confirm_destroy)
+        raise typer.Exit(code=exit_code)
+
+    if restart:
+        exit_code = orchestrate_restart(project_root, config)
+        raise typer.Exit(code=exit_code)
+
+    if status:
+        exit_code = get_status(project_root, config)
+        raise typer.Exit(code=exit_code)
+
+    if doctor:
+        from memora.diagnostics import run_doctor
+        report = run_doctor(config=config, verbose=verbose, json_output=json_output)
+        if not json_output:
+            raise typer.Exit(code=report.exit_code)
+
+    if logs:
+        from memora.lifecycle.cli import ComposeManager
+        compose = ComposeManager(project_root, config)
+        success = compose.logs(service="memora-http", follow=follow, tail=tail)
+        if not success:
+            console.print("[red]Failed to retrieve logs[/red]")
+            raise typer.Exit(code=1)
+
+    if version:
+        # Get version from pyproject.toml
+        ver = "0.1.0"
+        try:
+            import tomli
+            with open(project_root / "pyproject.toml", "rb") as f:
+                data = tomli.load(f)
+                ver = data.get("project", {}).get("version", ver)
+        except Exception:
+            pass
+        import platform
+        console.print(f"MEMORA version: {ver}")
+        console.print(f"Python: {platform.python_version()}")
+        console.print(f"Platform: {platform.platform()}")
+        console.print(f"Project root: {project_root}")
+
+    # If no flags provided, show help
+    if not any([start, stop, restart, status, doctor, logs, version]):
+        console.print(ctx.get_help())
 
 
 def get_config_or_exit() -> MemoraConfig:

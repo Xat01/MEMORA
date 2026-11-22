@@ -8,10 +8,13 @@ Tools: memorize, search_memory, get_context, list_sources, reindex
 import logging
 from typing import Any, Dict, List, Optional
 
-from mcp.server.mcpserver import MCPServer
+from mcp.server import MCPServer
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent
 from pydantic import BaseModel, Field
+from starlette.applications import Starlette
+from starlette.responses import JSONResponse
+from starlette.routing import Mount, Route
 
 from memora.memory.manager import MemoryManager
 from memora.config import get_config
@@ -237,11 +240,213 @@ class MemoraMCPServer:
                 self.server._lowlevel_server.create_initialization_options(),
             )
 
+    # =========================================================================
+    # Health Check Endpoints
+    # =========================================================================
+
+    async def _health_live(self, request) -> JSONResponse:
+        """
+        GET /health/live
+        Liveness probe - confirms the HTTP application is running.
+        Does not perform expensive dependency checks.
+        """
+        return JSONResponse(
+            {"status": "alive", "service": "memora"},
+            status_code=200
+        )
+
+    async def _health_ready(self, request) -> JSONResponse:
+        """
+        GET /health/ready
+        Readiness probe - determines whether MEMORA is ready to serve requests.
+        Checks required storage initialization and essential application dependencies.
+        """
+        try:
+            # Check that memory manager is initialized and storage is accessible
+            status = self.memory_manager.status()
+            index_stats = status.get("index", {})
+            vector_info = status.get("vector_store", {})
+
+            # Verify essential components are accessible
+            checks = {
+                "memory_manager": "ok",
+                "sqlite": "ok" if index_stats.get("total_files", 0) >= 0 else "unavailable",
+                "chromadb": "ok" if vector_info.get("count", 0) >= 0 else "unavailable",
+            }
+
+            all_ready = all(v == "ok" for v in checks.values())
+            status_code = 200 if all_ready else 503
+
+            return JSONResponse(
+                {
+                    "status": "ready" if all_ready else "not_ready",
+                    "service": "memora",
+                    "checks": checks,
+                },
+                status_code=status_code
+            )
+        except Exception as e:
+            logger.error(f"Readiness check failed: {e}")
+            return JSONResponse(
+                {
+                    "status": "not_ready",
+                    "service": "memora",
+                    "error": "readiness_check_failed",
+                },
+                status_code=503
+            )
+
+    async def _health_ollama(self, request) -> JSONResponse:
+        """
+        GET /health/ollama
+        Reports Ollama connectivity and model availability.
+        Does not expose secrets or sensitive configuration.
+        """
+        try:
+            config = get_config()
+            host = config.ollama_host
+            model = config.embedding_model
+
+            import httpx
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                # Check Ollama connectivity
+                tags_response = await client.get(f"{host}/api/tags")
+                if tags_response.status_code != 200:
+                    return JSONResponse(
+                        {
+                            "status": "unhealthy",
+                            "service": "memora",
+                            "component": "ollama",
+                            "host": host,
+                            "model": model,
+                            "error": f"ollama returned {tags_response.status_code}",
+                        },
+                        status_code=503
+                    )
+
+                models = tags_response.json().get("models", [])
+                model_names = [m.get("name", "") for m in models]
+                model_available = any(model in m for m in model_names)
+
+                return JSONResponse(
+                    {
+                        "status": "healthy" if model_available else "degraded",
+                        "service": "memora",
+                        "component": "ollama",
+                        "host": host,
+                        "model": model,
+                        "model_available": model_available,
+                        "available_models_count": len(models),
+                    },
+                    status_code=200 if model_available else 503
+                )
+        except httpx.ConnectError:
+            return JSONResponse(
+                {
+                    "status": "unhealthy",
+                    "service": "memora",
+                    "component": "ollama",
+                    "host": host if 'host' in locals() else config.ollama_host,
+                    "error": "connection_refused",
+                },
+                status_code=503
+            )
+        except httpx.TimeoutException:
+            return JSONResponse(
+                {
+                    "status": "unhealthy",
+                    "service": "memora",
+                    "component": "ollama",
+                    "host": host if 'host' in locals() else config.ollama_host,
+                    "error": "timeout",
+                },
+                status_code=503
+            )
+        except Exception as e:
+            logger.error(f"Ollama health check failed: {e}")
+            return JSONResponse(
+                {
+                    "status": "unhealthy",
+                    "service": "memora",
+                    "component": "ollama",
+                    "error": "health_check_failed",
+                },
+                status_code=503
+            )
+
+    async def _health_storage(self, request) -> JSONResponse:
+        """
+        GET /health/storage
+        Checks SQLite and ChromaDB availability.
+        Does not modify user data during health checks.
+        """
+        try:
+            status = self.memory_manager.status()
+            index_stats = status.get("index", {})
+            vector_info = status.get("vector_store", {})
+
+            # Check SQLite
+            sqlite_ok = True
+            sqlite_error = None
+            try:
+                from memora.storage.metadata_store import MetadataStore
+                store = MetadataStore()
+                stats = store.get_index_stats()
+                sqlite_chunks = stats.get("total_chunks", 0)
+            except Exception as e:
+                sqlite_ok = False
+                sqlite_error = str(e)
+                sqlite_chunks = 0
+
+            # Check ChromaDB
+            chroma_ok = True
+            chroma_error = None
+            chroma_count = 0
+            try:
+                vector_count = vector_info.get("count", 0)
+                chroma_count = vector_count
+            except Exception as e:
+                chroma_ok = False
+                chroma_error = str(e)
+
+            all_ok = sqlite_ok and chroma_ok
+
+            return JSONResponse(
+                {
+                    "status": "healthy" if all_ok else "degraded",
+                    "service": "memora",
+                    "components": {
+                        "sqlite": {
+                            "status": "healthy" if sqlite_ok else "unhealthy",
+                            "total_chunks": sqlite_chunks,
+                            "error": sqlite_error,
+                        },
+                        "chromadb": {
+                            "status": "healthy" if chroma_ok else "unhealthy",
+                            "vector_count": chroma_count,
+                            "error": chroma_error,
+                        },
+                    },
+                },
+                status_code=200 if all_ok else 503
+            )
+        except Exception as e:
+            logger.error(f"Storage health check failed: {e}")
+            return JSONResponse(
+                {
+                    "status": "unhealthy",
+                    "service": "memora",
+                    "error": "storage_check_failed",
+                },
+                status_code=503
+            )
+
     async def run_http(self, host: str = "127.0.0.1", port: int = 8080) -> None:
-        """Run server with HTTP transport (streamable-http)."""
+        """Run server with HTTP transport (streamable-http) and health endpoints."""
+        import contextlib
         from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
         from starlette.applications import Starlette
-        from starlette.routing import Mount
+        from starlette.routing import Mount, Route
 
         # Create session manager for streamable-http
         session_manager = StreamableHTTPSessionManager(
@@ -249,9 +454,23 @@ class MemoraMCPServer:
             event_store=None,  # In-memory by default
         )
 
-        app = Starlette(routes=[
-            Mount("/", app=session_manager.streamable_http_app()),
-        ])
+        # Lifespan manager for session manager lifecycle
+        @contextlib.asynccontextmanager
+        async def lifespan(app: Starlette):
+            async with session_manager.run():
+                yield
+
+        # Build routes: health endpoints + MCP transport
+        # session_manager.handle_request is the ASGI callable
+        routes = [
+            Route("/health/live", self._health_live, methods=["GET"]),
+            Route("/health/ready", self._health_ready, methods=["GET"]),
+            Route("/health/ollama", self._health_ollama, methods=["GET"]),
+            Route("/health/storage", self._health_storage, methods=["GET"]),
+            Mount("/", app=session_manager.handle_request),
+        ]
+
+        app = Starlette(routes=routes, lifespan=lifespan)
 
         import uvicorn
         config = uvicorn.Config(app, host=host, port=port, log_level="info")
@@ -268,8 +487,8 @@ def create_server(memory_manager: Optional[MemoryManager] = None) -> MemoraMCPSe
 # CLI Entry Point
 # =========================================================================
 
-async def main():
-    """Main entry point for running the MCP server."""
+async def _main_async():
+    """Async main entry point for running the MCP server."""
     import sys
 
     config = get_config()
@@ -288,6 +507,11 @@ async def main():
         await server.run_stdio()
 
 
-if __name__ == "__main__":
+def main():
+    """Synchronous entry point for console script."""
     import asyncio
-    asyncio.run(main())
+    asyncio.run(_main_async())
+
+
+if __name__ == "__main__":
+    main()

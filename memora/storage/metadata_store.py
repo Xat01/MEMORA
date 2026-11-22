@@ -5,7 +5,10 @@ SQLite-based metadata storage with FTS5 full-text search for keywords.
 Tracks files, chunks, and enables incremental indexing.
 """
 
+import asyncio
+import contextlib
 import hashlib
+import logging
 import sqlite3
 import time
 from contextlib import contextmanager
@@ -14,6 +17,10 @@ from pathlib import Path
 from typing import Optional
 
 from memora.config import get_config
+from memora.storage.lock import LockManager
+
+# Module logger
+logger = logging.getLogger("memora.storage.metadata_store")
 
 
 @dataclass
@@ -53,7 +60,7 @@ class MetadataStore:
     - chunks_fts: FTS5 virtual table for full-text search
     """
 
-    def __init__(self, db_path: Optional[Path] = None):
+    def __init__(self, db_path: Optional[Path] = None, lock_timeout: float = 30.0):
         if db_path is None:
             try:
                 self.config = get_config()
@@ -65,6 +72,10 @@ class MetadataStore:
             self.config = None
             self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Initialize persistent advisory lock manager
+        self._lock_manager = LockManager(self.db_path, timeout=lock_timeout)
+
         self._init_db()
 
     def _init_db(self) -> None:
@@ -122,17 +133,56 @@ class MetadataStore:
 
     @contextmanager
     def _conn(self):
-        """Context manager for database connections."""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
+        """
+        Context manager for database connections with advisory locking.
+
+        Acquires persistent advisory lock before database operations,
+        releases after commit/rollback. Lock file is kept persistent
+        (not unlinked) to prevent inode replacement race conditions.
+        """
+        # Acquire lock for the duration of the transaction
+        self._lock_manager.acquire(blocking=True)
         try:
-            yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            try:
+                yield conn
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
         finally:
-            conn.close()
+            # Release lock but keep lock file persistent (no unlink)
+            self._lock_manager.release()
+
+    @contextlib.asynccontextmanager
+    async def _conn_async(self):
+        """
+        Async context manager for database connections with advisory locking.
+
+        Uses asyncio.to_thread() for lock acquisition to avoid blocking
+        the HTTP event loop. Preserves the existing 30-second timeout.
+        Lock file is kept persistent (not unlinked) to prevent inode
+        replacement race conditions.
+        """
+        # Acquire lock asynchronously to avoid blocking event loop
+        await self._lock_manager.acquire_async(blocking=True)
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            try:
+                yield conn
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+        finally:
+            # Release lock but keep lock file persistent (no unlink)
+            self._lock_manager.release()
 
     # =========================================================================
     # File Operations
@@ -306,9 +356,13 @@ class MetadataStore:
             stats["indexed_files"] = conn.execute("SELECT COUNT(*) FROM files WHERE status = 'indexed'").fetchone()[0]
             stats["modified_files"] = conn.execute("SELECT COUNT(*) FROM files WHERE status = 'modified'").fetchone()[0]
             stats["deleted_files"] = conn.execute("SELECT COUNT(*) FROM files WHERE status = 'deleted'").fetchone()[0]
-            stats["embedding_model"] = self.get_meta("embedding_model", "unknown")
-            stats["embedding_dimensions"] = int(self.get_meta("embedding_dimensions", "0"))
-            stats["last_indexed"] = self.get_meta("last_indexed", "never")
+            # Read meta from same connection to avoid deadlock
+            stats["embedding_model"] = conn.execute("SELECT value FROM index_meta WHERE key = ?", ("embedding_model",)).fetchone()
+            stats["embedding_model"] = stats["embedding_model"][0] if stats["embedding_model"] else "unknown"
+            stats["embedding_dimensions"] = conn.execute("SELECT value FROM index_meta WHERE key = ?", ("embedding_dimensions",)).fetchone()
+            stats["embedding_dimensions"] = int(stats["embedding_dimensions"][0]) if stats["embedding_dimensions"] else 0
+            stats["last_indexed"] = conn.execute("SELECT value FROM index_meta WHERE key = ?", ("last_indexed",)).fetchone()
+            stats["last_indexed"] = stats["last_indexed"][0] if stats["last_indexed"] else "never"
             return stats
 
 

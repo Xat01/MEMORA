@@ -6,167 +6,192 @@ MEMORA is an open-source, model-independent memory infrastructure that enables A
 
 ---
 
-## Features
+## 🚀 Quick Start (Windows)
+
+### One-Command Installation
+
+```powershell
+# 1. Open PowerShell as Administrator (recommended for PATH)
+# 2. Navigate to MEMORA folder
+cd C:\Users\sa595\Desktop\MEMORA
+
+# 3. Run installer
+.\install.ps1
+
+# 4. Restart PowerShell (close and reopen)
+
+# 5. Configure your vault
+copy $env:LOCALAPPDATA\MEMORA\.env.example $env:LOCALAPPDATA\MEMORA\.env
+notepad $env:LOCALAPPDATA\MEMORA\.env
+# Edit VAULT_PATH to point to your Obsidian vault (folder containing .obsidian/)
+
+# 6. Start MEMORA (starts Docker with health checks)
+memora --start
+```
+
+### One-Command Installation (CMD)
+
+```cmd
+# 1. Open CMD as Administrator
+cd C:\Users\sa595\Desktop\MEMORA
+install.bat
+
+# 2. Restart CMD
+# 3. Configure vault
+copy %LOCALAPPDATA%\MEMORA\.env.example %LOCALAPPDATA%\MEMORA\.env
+notepad %LOCALAPPDATA%\MEMORA\.env
+# Edit VAULT_PATH
+
+# 4. Start MEMORA
+memora --start
+```
+
+---
+
+## ✨ Features
 
 - **Obsidian Markdown as Source of Truth** — Original notes never modified during indexing
 - **Dual Storage** — SQLite for metadata + keyword search (FTS5), ChromaDB for semantic vector search
 - **Local Embeddings** — Ollama integration with provider abstraction for flexibility
 - **Incremental Indexing** — Only processes changed/deleted files, avoids reprocessing
 - **Hybrid Retrieval** — Combines BM25 keyword search with semantic vector search via RRF
-- **MCP Server** — Exposes memory capabilities to any MCP-compatible client
+- **MCP Server** — Exposes memory capabilities to any MCP-compatible client (Claude Desktop, etc.)
 - **Security First** — Path traversal protection, no external uploads, secret protection
 
 ---
 
-## Architecture
+## 📋 Prerequisites
 
-```
-┌─────────────┐     ┌─────────────┐     ┌──────────────────┐
-│   Obsidian  │────▶│  Ingestion  │────▶│  SQLite (Meta)   │
-│   Vault     │     │  Pipeline   │     │  + FTS5 (KW)     │
-└─────────────┘     └──────┬──────┘     └──────────────────┘
-                           │
-                           ▼
-                    ┌─────────────┐     ┌──────────────────┐
-                    │  Embeddings │────▶│  ChromaDB        │
-                    │  (Ollama)   │     │  (Vector Search) │
-                    └─────────────┘     └──────────────────┘
-                           │
-                           ▼
-                    ┌──────────────────┐
-                    │  Hybrid Search   │
-                    │  (RRF Fusion)    │
-                    └──────────────────┘
-                           │
-                           ▼
-                    ┌──────────────────┐
-                    │   MCP Server     │
-                    │  (Memory Tools)  │
-                    └──────────────────┘
-```
+| Requirement | Version | Install |
+|-------------|---------|---------|
+| **Python** | 3.10+ | [python.org](https://python.org) or `winget install Python.Python.3.12` |
+| **Ollama** | Latest | [ollama.ai](https://ollama.ai) |
+| **Docker Desktop** | Latest | [docker.com](https://docker.com/products/docker-desktop) |
 
----
+```powershell
+# Verify Python
+python --version
+# Should show 3.10+
 
-## Quick Start
-
-```bash
-# 1. Install dependencies
-pip install -r requirements.txt
-
-# 2. Install and start Ollama
-# https://ollama.ai
+# Install embedding model
 ollama pull nomic-embed-text
-
-# 3. Configure vault path
-cp .env.example .env
-# Edit .env with your Obsidian vault path
-
-# 4. Verify installation with diagnostics
-memora doctor
-
-# 5. Run initial indexing
-memora ingest
-
-# 6. Start MCP server (for Claude Desktop)
-memora mcp
 ```
 
 ---
 
-## Configuration
+## 🎯 CLI Commands
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `VAULT_PATH` | Path to Obsidian vault | Required |
-| `CHROMA_PATH` | ChromaDB persistence directory | `./data/chromadb` |
-| `SQLITE_PATH` | SQLite database path | `./data/memora.db` |
-| `EMBEDDING_MODEL` | Ollama embedding model | `nomic-embed-text` |
-| `CHUNK_SIZE` | Token chunk size | `512` |
-| `CHUNK_OVERLAP` | Token overlap between chunks | `50` |
-| `EMBEDDING_DIMENSIONS` | Model output dimensions | `768` (nomic-embed-text) |
-
-See `.env.example` for all options.
-
----
-
-## CLI Commands
+### Lifecycle Management (Docker)
 
 | Command | Description |
 |---------|-------------|
-| `memora doctor` | Run system diagnostics (health checks) |
-| `memora doctor --json` | Output diagnostics as JSON |
-| `memora doctor --verbose` | Show detailed output |
-| `memora status` | Show index status and configuration |
-| `memora ingest` | Index vault (incremental by default) |
-| `memora ingest --full` | Full re-index (ignore change detection) |
-| `memora search <query>` | Search indexed knowledge |
-| `memora check-ollama` | Check Ollama connectivity and model |
-| `memora pull-model` | Pull embedding model in Ollama |
+| `memora --start` | Start with full preflight validation |
+| `memora --start --skip-preflight` | Fast start (skip checks) |
+| `memora --stop` | Graceful shutdown (preserves data) |
+| `memora --restart` | Restart with health verification |
+| `memora --status` | Show Docker, MCP, Ollama, Storage status |
+| `memora --doctor` | Run system diagnostics |
+| `memora --logs` | Show service logs |
+
+### Memory Operations (Local)
+
+| Command | Description |
+|---------|-------------|
+| `memora status` | Show index status |
+| `memora ingest` | Index vault (incremental) |
+| `memora ingest --full` | Full re-index |
+| `memora search "query"` | Search knowledge |
+| `memora check-ollama` | Test Ollama connection |
 | `memora mcp` | Start MCP server (stdio) |
-| `memora mcp http` | Start MCP server (HTTP) |
-
-## MCP Tools
-
-| Tool | Description |
-|------|-------------|
-| `memorize` | Capture knowledge into memory |
-| `search_memory` | Hybrid search (keyword + semantic) |
-| `get_context` | Retrieve relevant context for a topic |
-| `list_sources` | Show indexed files |
-| `reindex` | Full vault re-index |
 
 ---
 
-## Project Structure
+## 🔧 Configuration
 
-```
-MEMORA/
-├── README.md
-├── LICENSE
-├── requirements.txt
-├── .gitignore
-├── .env.example
-├── config.py
-├── memora/
-│   ├── __init__.py
-│   ├── config.py
-│   ├── ingestion/
-│   │   ├── __init__.py
-│   │   ├── vault_reader.py
-│   │   ├── chunker.py
-│   │   └── indexer.py
-│   ├── embeddings/
-│   │   ├── __init__.py
-│   │   ├── base.py
-│   │   └── ollama_provider.py
-│   ├── retrieval/
-│   │   ├── __init__.py
-│   │   ├── keyword_search.py
-│   │   ├── vector_search.py
-│   │   └── hybrid_search.py
-│   ├── storage/
-│   │   ├── __init__.py
-│   │   ├── metadata_store.py
-│   │   └── vector_store.py
-│   ├── memory/
-│   │   ├── __init__.py
-│   │   ├── capture.py
-│   │   └── manager.py
-│   └── mcp/
-│       ├── __init__.py
-│       └── server.py
-├── skills/
-│   └── memora/
-│       └── SKILL.md
-├── tests/
-└── docs/
-    ├── ARCHITECTURE.md
-    ├── INSTALLATION.md
-    └── CONFIGURATION.md
+Edit `$env:LOCALAPPDATA\MEMORA\.env`:
+
+```env
+# REQUIRED: Your Obsidian vault path
+VAULT_PATH=C:\Users\you\Documents\MyVault
+
+# Storage (usually keep defaults)
+CHROMA_PATH=./data/chromadb
+SQLITE_PATH=./data/memora.db
+
+# Embeddings
+EMBEDDING_MODEL=nomic-embed-text
+EMBEDDING_DIMENSIONS=768
+OLLAMA_HOST=http://localhost:11434
+
+# MCP Server
+MCP_TRANSPORT=http
+MCP_PORT=8080
 ```
 
 ---
 
-## License
+## 🤖 Claude Desktop Integration
+
+Add to `%APPDATA%\Claude\claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "memora": {
+      "command": "memora",
+      "args": ["mcp"],
+      "env": {
+        "VAULT_PATH": "C:\\Users\\you\\Documents\\MyVault"
+      }
+    }
+  }
+}
+```
+
+Then restart Claude Desktop. Tools available:
+- `memorize` — Save knowledge
+- `search_memory` — Search vault
+- `get_context` — Get relevant context
+- `list_sources` — List indexed files
+- `reindex` — Full re-index
+
+---
+
+## 📚 Full Documentation
+
+| Guide | Description |
+|-------|-------------|
+| [INSTALLATION.md](docs/INSTALLATION.md) | Detailed install guide for all platforms |
+| [CONFIGURATION.md](docs/CONFIGURATION.md) | All environment variables |
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design & internals |
+| [DOCKER_ARCHITECTURE_DECISIONS.md](docs/DOCKER_ARCHITECTURE_DECISIONS.md) | Docker design rationale |
+
+---
+
+## 🛠 Troubleshooting
+
+| Issue | Fix |
+|-------|-----|
+| `memora` not found | Restart terminal; check `$env:PATH -like "*MEMORA*"` |
+| VAULT_PATH error | Ensure `.obsidian` folder exists at path |
+| Ollama connection failed | Run `ollama serve`; verify `ollama list` |
+| Docker not found | Install Docker Desktop; ensure daemon running |
+| Module not found | Run `.\install.ps1` again to recreate venv |
+
+---
+
+## 🏗 Architecture
+
+```
+Obsidian Vault → Ingestion → SQLite (Meta + FTS5) + ChromaDB (Vectors)
+                                    ↓
+                            Hybrid Search (RRF)
+                                    ↓
+                            MCP Server → AI Agents
+```
+
+---
+
+## 📄 License
 
 MIT License — see [LICENSE](LICENSE) for details.
