@@ -42,13 +42,17 @@ def _coerce_path(v: Any) -> Optional[Path]:
 
 
 def find_project_root(start: Optional[Path] = None) -> Path:
-    """Find the MEMORA project root by locating .env or pyproject.toml."""
-    current = (start or Path(__file__).resolve().parent).resolve()
+    """Find the MEMORA project root by locating .env or pyproject.toml.
+    
+    Checks upwards from the given path (or current working directory).
+    If no project root is found, falls back to current working directory.
+    """
+    current = (start or Path.cwd()).resolve()
     while current != current.parent:
         if (current / ".env").exists() or (current / "pyproject.toml").exists():
             return current
         current = current.parent
-    return Path(__file__).resolve().parent.parent
+    return Path.cwd().resolve()
 
 
 def resolve_path(path: Path, base: Path) -> Path:

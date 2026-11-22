@@ -109,27 +109,66 @@ def init(
             console.print("Specify manually: memora init --vault /path/to/vault")
             return
 
-    # Create .env from example
-    if example_path.exists() and not env_path.exists():
-        content = example_path.read_text()
-    elif env_path.exists():
-        content = env_path.read_text()
+    # Template for fresh .env if no example exists
+    default_env = f"""# =============================================================================
+# MEMORA Configuration
+# =============================================================================
+
+# Obsidian Vault Path
+VAULT_PATH={vault}
+
+# Storage Paths (relative to project root)
+CHROMA_PATH=./data/chromadb
+SQLITE_PATH=./data/memora.db
+
+# Embedding Provider (ollama, openai, or custom)
+EMBEDDING_PROVIDER={provider}
+EMBEDDING_MODEL=nomic-embed-text
+EMBEDDING_DIMENSIONS=768
+OLLAMA_HOST=http://localhost:11434
+
+# Chunking Configuration
+CHUNK_SIZE=512
+CHUNK_OVERLAP=50
+
+# Search Configuration
+DEFAULT_SEARCH_K=10
+HYBRID_RRF_K=60
+
+# MCP Server Configuration
+MCP_TRANSPORT=stdio
+MCP_HOST=127.0.0.1
+MCP_PORT=8080
+
+# Logging
+LOG_LEVEL=INFO
+LOG_FILE=./logs/memora.log
+"""
+
+    if not env_path.exists():
+        if example_path.exists():
+            content = example_path.read_text(encoding="utf-8")
+            import re
+            if re.search(r'^VAULT_PATH=', content, re.MULTILINE):
+                content = re.sub(r'^VAULT_PATH=.*$', lambda m: f'VAULT_PATH={vault}', content, flags=re.MULTILINE)
+            else:
+                content += f"\nVAULT_PATH={vault}\n"
+            if provider != "ollama":
+                content = re.sub(r'^EMBEDDING_PROVIDER=.*$', lambda m: f'EMBEDDING_PROVIDER={provider}', content, flags=re.MULTILINE)
+        else:
+            content = default_env
+    else:
+        content = env_path.read_text(encoding="utf-8")
         console.print(f"[yellow]Updating existing .env[/yellow]")
-    else:
-        content = ""
+        import re
+        if re.search(r'^VAULT_PATH=', content, re.MULTILINE):
+            content = re.sub(r'^VAULT_PATH=.*$', lambda m: f'VAULT_PATH={vault}', content, flags=re.MULTILINE)
+        else:
+            content += f"\nVAULT_PATH={vault}\n"
+        if provider != "ollama":
+            content = re.sub(r'^EMBEDDING_PROVIDER=.*$', lambda m: f'EMBEDDING_PROVIDER={provider}', content, flags=re.MULTILINE)
 
-    # Update VAULT_PATH
-    import re
-    if re.search(r'^VAULT_PATH=', content, re.MULTILINE):
-        content = re.sub(r'^VAULT_PATH=.*$', f'VAULT_PATH={vault}', content, flags=re.MULTILINE)
-    else:
-        content += f"\nVAULT_PATH={vault}\n"
-
-    # Update provider if not ollama
-    if provider != "ollama":
-        content = re.sub(r'^EMBEDDING_PROVIDER=.*$', f'EMBEDDING_PROVIDER={provider}', content, flags=re.MULTILINE)
-
-    env_path.write_text(content)
+    env_path.write_text(content, encoding="utf-8")
 
     console.print(f"\n[green]✓[/green] Configuration saved to {env_path}")
     console.print(f"  Vault: {vault}")
