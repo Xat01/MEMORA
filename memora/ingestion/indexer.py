@@ -13,7 +13,7 @@ from memora.config import get_config
 from memora.ingestion.vault_reader import VaultReader, VaultFile
 from memora.ingestion.chunker import Chunker, TextChunk, chunk_vault_file
 from memora.embeddings.base import EmbeddingProvider
-from memora.embeddings.ollama_provider import OllamaProvider
+from memora.embeddings import get_default_provider
 from memora.storage.metadata_store import MetadataStore, FileRecord, ChunkRecord, compute_hash, generate_chunk_id
 from memora.storage.vector_store import VectorStore
 
@@ -65,7 +65,7 @@ class Indexer:
         # Initialize components
         self.metadata_store = metadata_store or MetadataStore()
         self.vector_store = vector_store or VectorStore()
-        self.embedding_provider = embedding_provider or OllamaProvider()
+        self.embedding_provider = embedding_provider or get_default_provider()
         self.vault_reader = vault_reader or VaultReader()
         self.chunker = chunker or Chunker()
 

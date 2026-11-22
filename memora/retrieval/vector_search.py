@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Optional, List
 
 from memora.embeddings.base import EmbeddingProvider
-from memora.embeddings.ollama_provider import OllamaProvider
+from memora.embeddings import get_default_provider
 from memora.storage.vector_store import VectorStore
 from memora.config import get_config
 
@@ -36,16 +36,15 @@ class VectorSearch:
                  vector_store: Optional[VectorStore] = None,
                  embedding_provider: Optional[EmbeddingProvider] = None):
         self.vector_store = vector_store or VectorStore()
-        # Use OllamaProvider if available, otherwise require explicit provider
+        # Use configured provider if available, otherwise require explicit provider
         if embedding_provider is None:
             try:
-                ollama = OllamaProvider()
-                if ollama.health_check():
-                    self.embedding_provider = ollama
+                provider = get_default_provider()
+                if provider.health_check():
+                    self.embedding_provider = provider
                 else:
-                    raise Exception("Ollama not healthy")
+                    self.embedding_provider = None
             except Exception:
-                # Will raise error on first use if no provider available
                 self.embedding_provider = None
         else:
             self.embedding_provider = embedding_provider

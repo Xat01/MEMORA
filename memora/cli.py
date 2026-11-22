@@ -17,7 +17,7 @@ from memora.retrieval.keyword_search import KeywordSearch
 from memora.retrieval.vector_search import VectorSearch
 from memora.storage.metadata_store import MetadataStore
 from memora.storage.vector_store import VectorStore
-from memora.embeddings.ollama_provider import OllamaProvider
+from memora.embeddings import create_provider
 from memora.embeddings.base import EmbeddingProvider, EmbeddingResult
 from memora.diagnostics import run_doctor, DoctorReport, CheckStatus
 
@@ -29,20 +29,115 @@ app = typer.Typer(
 console = Console()
 
 
+def _get_embedding_provider(config: MemoraConfig) -> EmbeddingProvider:
+    """Create the configured embedding provider, with fallback."""
+    try:
+        provider = create_provider(config.embedding_provider)
+        if provider.health_check():
+            return provider
+        raise Exception(f"{config.embedding_provider} provider not available")
+    except Exception as e:
+        console.print(f"[yellow]Warning: {e}[/yellow]")
+        console.print("[yellow]Falling back to keyword-only search (no embeddings)[/yellow]")
+        # Return a mock provider that produces zero vectors
+        class MockEmbeddingProvider(EmbeddingProvider):
+            @property
+            def provider_name(self): return "mock"
+            @property
+            def model_name(self): return "mock-model"
+            @property
+            def dimensions(self): return config.embedding_dimensions
+            def generate_embeddings(self, texts):
+                return EmbeddingResult(
+                    embeddings=[[0.0] * self.dimensions for _ in texts],
+                    model=self.model_name,
+                    dimensions=self.dimensions,
+                    token_count=sum(len(t) // 4 for t in texts),
+                    provider=self.provider_name,
+                )
+            def get_model_info(self): return {"name": self.model_name, "dimensions": self.dimensions}
+            def health_check(self): return True
+        return MockEmbeddingProvider()
+
+
 def get_config_or_exit() -> MemoraConfig:
     """Get config, validate vault, exit on failure."""
     try:
         config = get_config()
         if not config.validate_vault():
-            console.print("[red]Error:[/red] Invalid vault path. Check VAULT_PATH in .env")
-            console.print(f"  Configured path: {config.vault_path}")
-            console.print(f"  .obsidian exists: {(config.vault_path / '.obsidian').exists()}")
+            console.print("[red]Error:[/red] No valid Obsidian vault found.")
+            if config.vault_path:
+                console.print(f"  Configured path: {config.vault_path}")
+            console.print("  Set VAULT_PATH in .env or as an environment variable.")
+            console.print("  Run [bold]memora init[/bold] to set up configuration.")
             sys.exit(1)
         config.ensure_dirs()
         return config
     except Exception as e:
         console.print(f"[red]Configuration error:[/red] {e}")
         sys.exit(1)
+
+
+@app.command()
+def init(
+    vault: str = typer.Option(None, "--vault", "-v", help="Path to Obsidian vault"),
+    provider: str = typer.Option("ollama", "--provider", "-p", help="Embedding provider: ollama, openai"),
+):
+    """Initialize MEMORA configuration (.env file)."""
+    from memora.config import find_project_root, discover_obsidian_vaults
+
+    project_root = find_project_root()
+    env_path = project_root / ".env"
+    example_path = project_root / ".env.example"
+
+    # Auto-discover vault if not specified
+    if not vault:
+        console.print("[bold]Searching for Obsidian vaults...[/bold]")
+        vaults = discover_obsidian_vaults()
+        if vaults:
+            console.print(f"[green]Found {len(vaults)} vault(s):[/green]")
+            for i, v in enumerate(vaults):
+                console.print(f"  {i+1}. {v}")
+            if len(vaults) == 1:
+                vault = str(vaults[0])
+                console.print(f"\nUsing: {vault}")
+            else:
+                console.print("\nSpecify with: memora init --vault /path/to/vault")
+                return
+        else:
+            console.print("[yellow]No Obsidian vaults found.[/yellow]")
+            console.print("Specify manually: memora init --vault /path/to/vault")
+            return
+
+    # Create .env from example
+    if example_path.exists() and not env_path.exists():
+        content = example_path.read_text()
+    elif env_path.exists():
+        content = env_path.read_text()
+        console.print(f"[yellow]Updating existing .env[/yellow]")
+    else:
+        content = ""
+
+    # Update VAULT_PATH
+    import re
+    if re.search(r'^VAULT_PATH=', content, re.MULTILINE):
+        content = re.sub(r'^VAULT_PATH=.*$', f'VAULT_PATH={vault}', content, flags=re.MULTILINE)
+    else:
+        content += f"\nVAULT_PATH={vault}\n"
+
+    # Update provider if not ollama
+    if provider != "ollama":
+        content = re.sub(r'^EMBEDDING_PROVIDER=.*$', f'EMBEDDING_PROVIDER={provider}', content, flags=re.MULTILINE)
+
+    env_path.write_text(content)
+
+    console.print(f"\n[green]✓[/green] Configuration saved to {env_path}")
+    console.print(f"  Vault: {vault}")
+    console.print(f"  Provider: {provider}")
+    console.print(f"\nNext steps:")
+    console.print(f"  1. Edit {env_path} to customize settings")
+    console.print(f"  2. Run [bold]memora ingest[/bold] to index your vault")
+    console.print(f"  3. Run [bold]memora search \"query\"[/bold] to search")
 
 
 @app.command()
@@ -68,6 +163,7 @@ def status():
     table.add_row("Vault Path", str(config.vault_path))
     table.add_row("ChromaDB Path", str(config.chroma_path))
     table.add_row("SQLite Path", str(config.sqlite_path))
+    table.add_row("Embedding Provider", config.embedding_provider)
     table.add_row("Embedding Model", config.embedding_model)
     table.add_row("Embedding Dimensions", str(config.embedding_dimensions))
     table.add_row("Chunk Size", str(config.chunk_size))
@@ -79,7 +175,6 @@ def status():
     table.add_row("Deleted Files", str(stats.get("deleted_files", 0)))
     table.add_row("Total Chunks", str(stats.get("total_chunks", 0)))
     table.add_row("Vector Count", str(stats.get("vector_count", 0)))
-    table.add_row("Embedding Model (stored)", stats.get("embedding_model", "unknown"))
     table.add_row("Last Indexed", stats.get("last_indexed", "never"))
 
     console.print(table)
@@ -154,40 +249,11 @@ def search(
     file_paths = [file] if file and not isinstance(file, typer.models.OptionInfo) else None
     tags = [tag] if tag and not isinstance(tag, typer.models.OptionInfo) else None
 
-    # Create search components with shared stores using config paths
+    # Create search components
     metadata_store = MetadataStore(db_path=config.sqlite_path)
     vector_store = VectorStore(persist_path=str(config.chroma_path))
     keyword_search = KeywordSearch(metadata_store=metadata_store)
-
-    # Try Ollama, fall back to mock provider
-    try:
-        ollama_provider = OllamaProvider()
-        if ollama_provider.health_check():
-            embedding_provider = ollama_provider
-        else:
-            raise Exception("Ollama not available")
-    except Exception:
-        # Use mock provider for testing
-        class MockEmbeddingProvider(EmbeddingProvider):
-            @property
-            def provider_name(self): return "mock"
-            @property
-            def model_name(self): return "mock-model"
-            @property
-            def dimensions(self): return 768
-            def generate_embeddings(self, texts):
-                return EmbeddingResult(
-                    embeddings=[[0.1] * 768 for _ in texts],
-                    model=self.model_name,
-                    dimensions=self.dimensions,
-                    token_count=sum(len(t) // 4 for t in texts),
-                    provider=self.provider_name,
-                )
-            def get_model_info(self): return {"name": self.model_name, "dimensions": self.dimensions}
-            def health_check(self): return True
-        embedding_provider = MockEmbeddingProvider()
-        console.print("[yellow]Using mock embedding provider (Ollama not available)[/yellow]")
-
+    embedding_provider = _get_embedding_provider(config)
     vector_search = VectorSearch(vector_store=vector_store, embedding_provider=embedding_provider)
     hybrid_search = HybridSearch(keyword_search=keyword_search, vector_search=vector_search)
 
@@ -238,49 +304,74 @@ def search(
 
 
 @app.command()
-def check_ollama():
-    """Check Ollama availability and embedding model."""
-    config = get_config_or_exit()
+def check_provider():
+    """Check embedding provider availability."""
+    try:
+        config = get_config()
+    except Exception as e:
+        console.print(f"[red]Configuration error:[/red] {e}")
+        sys.exit(1)
 
-    provider = OllamaProvider(host=config.ollama_host, model=config.embedding_model)
-
-    console.print("[bold]Checking Ollama...[/bold]")
+    console.print(f"[bold]Checking {config.embedding_provider} provider...[/bold]")
 
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         console=console,
     ) as progress:
-        task = progress.add_task("Connecting to Ollama...", total=None)
-        healthy = provider.health_check()
+        task = progress.add_task("Connecting...", total=None)
+        try:
+            provider = create_provider(config.embedding_provider)
+            healthy = provider.health_check()
+        except Exception as e:
+            console.print(f"[red]✗ Provider error:[/red] {e}")
+            sys.exit(1)
         progress.update(task, completed=True)
 
     if healthy:
-        console.print("[green]✓[/green] Ollama is running and model is available")
-
+        console.print(f"[green]✓[/green] {config.embedding_provider} provider is available")
         model_info = provider.get_model_info()
         info_table = Table(show_header=False, box=None)
         info_table.add_column("Property", style="cyan")
         info_table.add_column("Value", style="white")
-
         for key, value in model_info.items():
             info_table.add_row(key, str(value))
-
         console.print(info_table)
     else:
-        console.print("[red]✗[/red] Ollama not available or model not found")
-        console.print(f"  Host: {config.ollama_host}")
-        console.print(f"  Model: {config.embedding_model}")
-        console.print("\nTo install the model, run:")
-        console.print(f"  ollama pull {config.embedding_model}")
+        console.print(f"[red]✗[/red] {config.embedding_provider} provider not available")
+        if config.embedding_provider == "ollama":
+            console.print(f"  Host: {config.ollama_host}")
+            console.print(f"  Model: {config.embedding_model}")
+            console.print("\n  Run: ollama serve")
+            console.print(f"  Then: ollama pull {config.embedding_model}")
+        elif config.embedding_provider == "openai":
+            console.print(f"  API Base: {config.embedding_api_base}")
+            console.print(f"  Model: {config.embedding_model}")
+            console.print("\n  Check EMBEDDING_API_KEY and EMBEDDING_API_BASE in .env")
         sys.exit(1)
 
 
-@app.command()
+# Keep backward compatibility
+@app.command(name="check-ollama", hidden=True)
+def check_ollama():
+    """(Deprecated: use check-provider) Check Ollama availability."""
+    check_provider()
+
+
+@app.command(name="pull-model")
 def pull_model():
     """Pull the embedding model in Ollama."""
-    config = get_config_or_exit()
+    try:
+        config = get_config()
+    except Exception as e:
+        console.print(f"[red]Configuration error:[/red] {e}")
+        sys.exit(1)
 
+    if config.embedding_provider != "ollama":
+        console.print(f"[yellow]pull-model is only for Ollama. Current provider: {config.embedding_provider}[/yellow]")
+        return
+
+    from memora.embeddings.ollama_provider import OllamaProvider
     provider = OllamaProvider(host=config.ollama_host, model=config.embedding_model)
 
     console.print(f"[bold]Pulling model:[/bold] {config.embedding_model}")
@@ -302,12 +393,34 @@ def pull_model():
 
 
 @app.command()
+def mcp():
+    """Start the MCP server (stdio transport for Claude Desktop, etc.)."""
+    import asyncio
+    from memora.mcp.server import create_server
+
+    try:
+        config = get_config()
+        config.ensure_dirs()
+    except Exception as e:
+        console.print(f"[red]Configuration error:[/red] {e}")
+        sys.exit(1)
+
+    server = create_server()
+
+    if config.mcp_transport == "http":
+        console.print(f"[bold]Starting MEMORA MCP server on HTTP {config.mcp_host}:{config.mcp_port}[/bold]")
+        asyncio.run(server.run_http(config.mcp_host, config.mcp_port))
+    else:
+        # stdio — no console output (it would corrupt the protocol)
+        asyncio.run(server.run_stdio())
+
+
+@app.command()
 def doctor(
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed output"),
     json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON"),
 ):
     """Run system diagnostics to verify MEMORA installation and configuration."""
-    # Use get_config directly (not get_config_or_exit) so doctor can diagnose config issues
     try:
         config = get_config()
     except Exception as e:
@@ -317,7 +430,6 @@ def doctor(
     report = run_doctor(config=config, verbose=verbose, json_output=json_output)
 
     if not json_output:
-        # Exit with appropriate code
         sys.exit(report.exit_code)
 
 

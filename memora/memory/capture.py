@@ -12,7 +12,7 @@ from typing import Optional, List, Dict, Any
 
 from memora.config import get_config
 from memora.embeddings.base import EmbeddingProvider
-from memora.embeddings.ollama_provider import OllamaProvider
+from memora.embeddings import get_default_provider
 from memora.storage.metadata_store import MetadataStore, ChunkRecord, compute_hash, generate_chunk_id
 from memora.storage.vector_store import VectorStore
 from memora.ingestion.chunker import Chunker, TextChunk, chunk_vault_file
@@ -46,7 +46,7 @@ class MemoryCapture:
         self.config = get_config()
         self.metadata_store = metadata_store or MetadataStore()
         self.vector_store = vector_store or VectorStore()
-        self.embedding_provider = embedding_provider or OllamaProvider()
+        self.embedding_provider = embedding_provider or get_default_provider()
         self.chunker = chunker or Chunker()
 
     def memorize(self, content: str, tags: Optional[List[str]] = None,
