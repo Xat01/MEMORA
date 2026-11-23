@@ -88,13 +88,21 @@ def discover_obsidian_vaults(search_paths: Optional[List[Path]] = None,
             home / "Notes",
             home / "Second Brain",
         ]:
-            if loc.exists():
-                search_paths.append(loc)
+            try:
+                if loc.exists():
+                    search_paths.append(loc)
+            except (PermissionError, OSError):
+                pass
         # Windows-specific
         if os.name == "nt":
             onedrive = os.environ.get("OneDrive")
             if onedrive:
-                search_paths.append(Path(onedrive) / "Documents")
+                try:
+                    od_doc = Path(onedrive) / "Documents"
+                    if od_doc.exists():
+                        search_paths.append(od_doc)
+                except (PermissionError, OSError):
+                    pass
 
     skip_dirs = {'.git', 'node_modules', '__pycache__', '.venv', 'venv',
                  'build', 'dist', '.cache', 'tmp'}
@@ -320,11 +328,15 @@ def create_config_class(project_root: Path):
             # Resolve vault path
             if self.vault_path is not None:
                 resolved = resolve_path(self.vault_path, project_root)
-                if resolved.exists() and (resolved / ".obsidian").exists():
+                try:
+                    if resolved.exists() and (resolved / ".obsidian").exists():
+                        self.vault_path = resolved
+                    else:
+                        logger.warning(f"Configured vault path not valid: {resolved}")
+                        self.vault_path = None
+                except (PermissionError, OSError):
+                    # In restricted or sandboxed environments, preserve the configured path
                     self.vault_path = resolved
-                else:
-                    logger.warning(f"Configured vault path not valid: {resolved}")
-                    self.vault_path = None
             # Auto-discover if not set
             if self.vault_path is None:
                 vaults = discover_obsidian_vaults()

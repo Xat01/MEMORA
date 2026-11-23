@@ -434,7 +434,14 @@ def pull_model():
 @app.command()
 def mcp():
     """Start the MCP server (stdio transport for Claude Desktop, etc.)."""
+    import sys
     import asyncio
+    # Force unbuffered output on stdio pipes for MCP clients (Claude Desktop, etc.)
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
+    if hasattr(sys.stdin, "reconfigure"):
+        sys.stdin.reconfigure(line_buffering=True)
+
     from memora.mcp.server import create_server
 
     try:

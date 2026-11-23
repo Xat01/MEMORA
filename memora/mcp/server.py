@@ -6,19 +6,21 @@ Tools: memorize, search_memory, get_context, list_sources, reindex
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent
 from pydantic import BaseModel, Field
 
-from memora.memory.manager import MemoryManager
+if TYPE_CHECKING:
+    from memora.memory.manager import MemoryManager
 from memora.config import get_config
 
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+import sys
+# Configure logging to stderr ONLY (stdout is strictly reserved for MCP JSON-RPC protocol)
+logging.basicConfig(level=logging.INFO, stream=sys.stderr)
 logger = logging.getLogger("memora.mcp")
 
 
@@ -63,11 +65,20 @@ class MemoraMCPServer:
     Exposes memory tools via MCP protocol.
     """
 
-    def __init__(self, memory_manager: Optional[MemoryManager] = None):
+    def __init__(self, memory_manager: Optional["MemoryManager"] = None):
         self.config = get_config()
-        self.memory_manager = memory_manager or MemoryManager()
+        self._memory_manager = memory_manager
         self.server = MCPServer("memora")
         self._register_tools()
+
+    @property
+    def memory_manager(self) -> "MemoryManager":
+        """Lazy-loaded MemoryManager to ensure instant MCP startup and tool listing."""
+        if self._memory_manager is None:
+            logger.info("Initializing MemoryManager (lazy load)...")
+            from memora.memory.manager import MemoryManager
+            self._memory_manager = MemoryManager()
+        return self._memory_manager
 
     def _register_tools(self) -> None:
         """Register all MCP tools using MCP 2.3.0 API."""
@@ -259,7 +270,7 @@ class MemoraMCPServer:
         await server.serve()
 
 
-def create_server(memory_manager: Optional[MemoryManager] = None) -> MemoraMCPServer:
+def create_server(memory_manager: Optional["MemoryManager"] = None) -> MemoraMCPServer:
     """Factory function to create MEMORA MCP server."""
     return MemoraMCPServer(memory_manager)
 
@@ -271,6 +282,10 @@ def create_server(memory_manager: Optional[MemoryManager] = None) -> MemoraMCPSe
 async def main():
     """Main entry point for running the MCP server."""
     import sys
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
+    if hasattr(sys.stdin, "reconfigure"):
+        sys.stdin.reconfigure(line_buffering=True)
 
     config = get_config()
     config.ensure_dirs()

@@ -130,9 +130,10 @@ class Indexer:
             if to_delete:
                 self._report_progress(f"Processing {len(to_delete)} deletions...", 0, len(to_delete))
                 for i, path in enumerate(to_delete):
+                    chunks = self.metadata_store.get_chunks_by_file(path)
                     self._delete_file(path)
                     stats.files_deleted += 1
-                    stats.chunks_deleted += len(self.metadata_store.get_chunks_by_file(path))
+                    stats.chunks_deleted += len(chunks)
                     self._report_progress(f"Deleted {path}", i + 1, len(to_delete))
 
             # Step 4: Process new/modified files
@@ -140,11 +141,10 @@ class Indexer:
                 self._report_progress(f"Indexing {len(to_index)} files...", 0, len(to_index))
                 for i, vault_file in enumerate(to_index):
                     try:
-                        self._index_file(vault_file)
+                        num_chunks = self._index_file(vault_file)
                         stats.files_indexed += 1
-                        chunks = self.metadata_store.get_chunks_by_file(vault_file.path)
-                        stats.chunks_created += len(chunks)
-                        stats.embeddings_generated += len(chunks)
+                        stats.chunks_created += num_chunks
+                        stats.embeddings_generated += num_chunks
                     except Exception as e:
                         error_msg = f"Error indexing {vault_file.path}: {e}"
                         stats.errors.append(error_msg)
@@ -221,17 +221,27 @@ class Indexer:
 
         return to_index, to_delete
 
-    def _index_file(self, vault_file: VaultFile) -> None:
-        """Index a single vault file."""
+    def _index_file(self, vault_file: VaultFile) -> int:
+        """Index a single vault file. Returns chunk count."""
         # Chunk the file
         chunks = chunk_vault_file(vault_file, self.chunker)
+
+        # Clean up existing chunks for this file if updating
+        old_chunks = self.metadata_store.get_chunks_by_file(vault_file.path)
+        if old_chunks:
+            old_ids = [c.vector_id for c in old_chunks]
+            try:
+                self.vector_store.delete(old_ids)
+            except Exception:
+                pass
+            self.metadata_store.delete_chunks_by_file(vault_file.path)
 
         if not chunks:
             # Empty file - still track it
             self._update_file_record(vault_file, [])
-            return
+            return 0
 
-        # Generate embeddings
+        # Generate embeddings in batch
         chunk_texts = [chunk.text for chunk in chunks]
         embedding_result = self.embedding_provider.generate_embeddings(chunk_texts)
 
@@ -259,13 +269,15 @@ class Indexer:
             )
             chunk_records.append(chunk_record)
 
-            # Update metadata store
-            self.metadata_store.upsert_chunk(chunk_record)
+        # Batch write chunks to metadata store in a single transaction
+        self.metadata_store.batch_upsert_chunks(chunk_records)
 
-            # Update FTS5
-            self.metadata_store.upsert_fts(
-                vector_id, chunk.text, chunk.heading_path, vault_file.path
-            )
+        # Batch write FTS5 entries in a single transaction
+        fts_entries = [
+            (cr.id, chunk.text, chunk.heading_path, vault_file.path)
+            for cr, chunk in zip(chunk_records, chunks)
+        ]
+        self.metadata_store.batch_upsert_fts(fts_entries)
 
         # Batch add to vector store
         metadatas = [{
@@ -285,6 +297,7 @@ class Indexer:
 
         # Update file record
         self._update_file_record(vault_file, chunk_records)
+        return len(chunk_records)
 
     def _update_file_record(self, vault_file: VaultFile, chunks: list[ChunkRecord]) -> None:
         """Update file record in metadata store."""

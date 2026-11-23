@@ -4,11 +4,14 @@ MEMORA Ollama Embedding Provider
 Local embedding generation via Ollama HTTP API.
 """
 
-import httpx
+import logging
 from typing import Optional
+import httpx
 
 from memora.config import get_config
 from memora.embeddings.base import EmbeddingProvider, EmbeddingResult
+
+logger = logging.getLogger("memora.embeddings.ollama")
 
 
 class OllamaProvider(EmbeddingProvider):
@@ -95,7 +98,25 @@ class OllamaProvider(EmbeddingProvider):
         )
 
     def _embed_batch(self, texts: list[str]) -> list[list[float]]:
-        """Embed a single batch of texts."""
+        """Embed a batch of texts using /api/embed (with fallback to /api/embeddings)."""
+        if not texts:
+            return []
+
+        # Try batch /api/embed endpoint first (modern Ollama — single HTTP call)
+        try:
+            response = self.client.post(
+                "/api/embed",
+                json={"model": self.model, "input": texts},
+            )
+            if response.status_code == 200:
+                data = response.json()
+                embeddings = data.get("embeddings")
+                if embeddings and len(embeddings) == len(texts):
+                    return embeddings
+        except Exception as e:
+            logger.debug(f"Batch embed failed, falling back to sequential embeddings: {e}")
+
+        # Fallback to legacy single /api/embeddings endpoint
         embeddings = []
         for text in texts:
             response = self.client.post(

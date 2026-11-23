@@ -97,10 +97,11 @@ class TestOllamaProvider:
         assert provider.dimensions == 768
 
     def test_generate_embeddings_success(self, test_config, mock_httpx):
-        """Test successful embedding generation."""
-        # Mock response
+        """Test successful embedding generation using modern batch endpoint."""
+        # Mock batch response
         mock_response = MagicMock()
-        mock_response.json.return_value = {"embedding": [0.1] * 768}
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"embeddings": [[0.1] * 768, [0.2] * 768]}
         mock_response.raise_for_status = MagicMock()
         mock_httpx.post.return_value = mock_response
 
@@ -111,7 +112,29 @@ class TestOllamaProvider:
         assert len(result.embeddings[0]) == 768
         assert result.model == "test-model"
         assert result.provider == "ollama"
-        assert mock_httpx.post.call_count == 2  # One call per text (batch_size=16 but we only have 2)
+        assert mock_httpx.post.call_count == 1  # 1 single batch call for all texts
+
+    def test_generate_embeddings_legacy_fallback(self, test_config, mock_httpx):
+        """Test fallback to legacy endpoint when batch endpoint is unsupported."""
+        def mock_post(url, **kwargs):
+            resp = MagicMock()
+            if url == "/api/embed":
+                resp.status_code = 404
+                resp.raise_for_status.side_effect = Exception("404 Not Found")
+                return resp
+            resp.status_code = 200
+            resp.json.return_value = {"embedding": [0.1] * 768}
+            resp.raise_for_status = MagicMock()
+            return resp
+
+        mock_httpx.post.side_effect = mock_post
+
+        provider = OllamaProvider(host="http://localhost:11434", model="test-model")
+        result = provider.generate_embeddings(["text 1", "text 2"])
+
+        assert len(result.embeddings) == 2
+        assert len(result.embeddings[0]) == 768
+        assert mock_httpx.post.call_count == 3  # 1 attempt to /api/embed + 2 calls to /api/embeddings
 
     def test_generate_embeddings_empty_list(self, test_config, mock_httpx):
         """Test embedding generation with empty list."""
