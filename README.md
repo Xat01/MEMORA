@@ -2,7 +2,7 @@
 
 > **Local-First Persistent Memory Infrastructure for AI Agents**
 
-MEMORA is an open-source, model-independent memory infrastructure that enables AI agents to maintain persistent, searchable knowledge across sessions using Retrieval-Augmented Generation (RAG) with Obsidian Markdown as the source of truth.
+MEMORA is an open-source, model-independent memory infrastructure that enables AI agents to maintain persistent, searchable knowledge across sessions using Retrieval-Augmented Generation (RAG) with Obsidian Markdown as the single source of truth.
 
 ---
 
@@ -10,6 +10,8 @@ MEMORA is an open-source, model-independent memory infrastructure that enables A
 
 - **Obsidian Markdown as Source of Truth** — Your notes are never modified or altered during indexing.
 - **Dual Storage & Hybrid Search** — SQLite for metadata and BM25 keyword search (FTS5), paired with ChromaDB for semantic vector embeddings via Reciprocal Rank Fusion (RRF).
+- **High-Performance Batch Engine** — High-throughput indexing with SQLite WAL mode and native batch embedding generation (Ollama `/api/embed` & OpenAI batching).
+- **Instant MCP Handshake (<10ms)** — Lazy-loads storage drivers on tool execution, guaranteeing instant detection and connection in Claude Desktop and other MCP clients.
 - **Flexible Inference & Embeddings** — Built-in support for:
   - **Local Ollama** (e.g. `nomic-embed-text`, `mxbai-embed-large`) — 100% private and offline.
   - **OpenAI-compatible APIs** (OpenAI `text-embedding-3-small`, OpenRouter, Together AI, Fireworks, Azure OpenAI).
@@ -23,20 +25,38 @@ MEMORA is an open-source, model-independent memory infrastructure that enables A
 
 ## 🚀 Installation
 
-### One-Command Install
+### Option 1: Using `uv` (Recommended — Fastest)
+
+[uv](https://github.com/astral-sh/uv) provides instant virtualenv creation and package management.
 
 ```bash
-# Using pip
-pip install git+https://github.com/Xat01/MEMORA.git@TestRe
+# Clone the repository
+git clone https://github.com/Xat01/MEMORA.git
+cd MEMORA
 
-# Or using uv (fastest)
-uv tool install git+https://github.com/Xat01/MEMORA.git@TestRe
-
-# Or using pipx
-pipx install git+https://github.com/Xat01/MEMORA.git@TestRe
+# Create virtual environment and install dependencies in seconds
+uv venv
+uv pip install -e .
 ```
 
-> **Windows Tip**: You can always run MEMORA reliably using `python -m memora <command>` (or `py -m memora <command>`) if your Python scripts directory isn't added to your system PATH.
+Or install globally as an isolated CLI tool with `uv`:
+```bash
+uv tool install git+https://github.com/Xat01/MEMORA.git@TestRe
+```
+
+### Option 2: Using `pip`
+
+```bash
+# Install directly from Git branch
+pip install git+https://github.com/Xat01/MEMORA.git@TestRe
+
+# Or clone and install locally
+git clone https://github.com/Xat01/MEMORA.git
+cd MEMORA
+pip install -e .
+```
+
+> **Windows Tip**: On Windows, you can always invoke MEMORA directly via the Python launcher using `py -m memora <command>` or `python -m memora <command>`.
 
 ---
 
@@ -45,17 +65,19 @@ pipx install git+https://github.com/Xat01/MEMORA.git@TestRe
 ### 1. Initialize Configuration
 Run the automatic initialization wizard in your workspace:
 ```bash
-python -m memora init
+# With uv:
+uv run memora init
+
+# With standard Python:
+py -m memora init --vault "C:\path\to\your\Obsidian\Vault"
+# (On macOS/Linux: memora init --vault "/path/to/vault")
 ```
-Or specify your Obsidian vault path directly:
-```bash
-python -m memora init --vault "C:\Users\you\Documents\ObsidianVault"
-```
-*(On macOS/Linux: `memora init --vault "/path/to/vault"`)*
+
+If you don't pass `--vault`, MEMORA will automatically scan standard locations (Documents, Notes, etc.) and auto-detect your vault.
 
 ### 2. Choose Your Embedding Provider
 
-Edit your `.env` file (or set environment variables):
+Edit the generated `.env` file:
 
 #### Option A: Local Ollama (Default, Free & Offline)
 ```ini
@@ -66,64 +88,122 @@ OLLAMA_HOST=http://localhost:11434
 ```
 Ensure Ollama is running (`ollama serve`) and pull the model:
 ```bash
-python -m memora pull-model
+uv run memora pull-model
+# or: py -m memora pull-model
 ```
 
-#### Option B: OpenAI / 3rd-Party Cloud Inference
+#### Option B: OpenAI / OpenRouter / Cloud Inference
 ```ini
 EMBEDDING_PROVIDER=openai
 EMBEDDING_API_KEY=sk-...
 EMBEDDING_MODEL=text-embedding-3-small
 EMBEDDING_DIMENSIONS=1536
+
+# Optional: Custom endpoint (OpenRouter, Together AI, Azure, vLLM)
+# EMBEDDING_API_BASE=https://openrouter.ai/api/v1
 ```
-*(For OpenRouter, Together AI, Azure, or local vLLM, add `EMBEDDING_API_BASE=https://...`)*
 
 ### 3. Verify Health
-Run diagnostics to verify Python, storage, and embedding connectivity:
+Run diagnostics to verify Python environment, database integrity, and embedding connectivity:
 ```bash
-python -m memora doctor
+uv run memora doctor
+# or: py -m memora doctor
 ```
 
 ### 4. Ingest Your Vault
-Index your notes:
+Index your notes into MEMORA (processes ~1,000 chunks in a few minutes, with subsequent incremental runs taking ~1s):
 ```bash
-python -m memora ingest
+uv run memora ingest
+# or: py -m memora ingest
 ```
 
 ### 5. Test Search
 Test hybrid retrieval from your terminal:
 ```bash
-python -m memora search "machine learning concepts"
+uv run memora search "cybersecurity"
+# or: py -m memora search "cybersecurity"
 ```
 
 ---
 
-## 🤖 AI Agent & MCP Integration
+## 🤖 Claude Desktop & MCP Integration
 
-MEMORA exposes tools over the **Model Context Protocol (MCP)** via standard I/O.
+MEMORA exposes 5 high-level tools over the **Model Context Protocol (MCP)** via standard I/O:
 
-### Claude Desktop Integration
-Add the following to your `claude_desktop_config.json`:
+* `search_memory` — Hybrid semantic + keyword search across all indexed notes.
+* `get_context` — Retrieve structured context chunks for any topic.
+* `memorize` — Capture new insights and summaries back into your vault.
+* `list_sources` — Show all indexed files and chunk counts (unlimited).
+* `reindex` — Trigger full vault re-indexing on demand.
+
+### Configuration (`claude_desktop_config.json`)
+
+Edit your Claude Desktop config file:
 * **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
 * **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
 
+#### Option 1: Using `uv` (Recommended)
 ```json
 {
   "mcpServers": {
     "memora": {
-      "command": "python",
-      "args": ["-m", "memora", "mcp"]
+      "command": "uv",
+      "args": [
+        "--directory",
+        "C:\\path\\to\\MEMORA",
+        "run",
+        "memora",
+        "mcp"
+      ],
+      "env": {
+        "VAULT_PATH": "C:\\path\\to\\your\\Obsidian\\Vault",
+        "PYTHONUNBUFFERED": "1"
+      }
     }
   }
 }
 ```
 
-Restart Claude Desktop. You will now have 5 memory tools available in every chat:
-- `search_memory` — Hybrid semantic + keyword search across all indexed notes.
-- `get_context` — Retrieve structured context chunks for any topic.
-- `memorize` — Capture new insights and summaries back into your vault.
-- `list_sources` — Show indexed files and chunks.
-- `reindex` — Trigger full vault re-indexing.
+#### Option 2: Using `uvx` (Zero Local Setup)
+```json
+{
+  "mcpServers": {
+    "memora": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/Xat01/MEMORA.git@TestRe",
+        "memora",
+        "mcp"
+      ],
+      "env": {
+        "VAULT_PATH": "C:\\path\\to\\your\\Obsidian\\Vault",
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  }
+}
+```
+
+#### Option 3: Using Python Launcher (`py` / `python`)
+```json
+{
+  "mcpServers": {
+    "memora": {
+      "command": "py",
+      "args": ["-u", "-m", "memora", "mcp"],
+      "env": {
+        "VAULT_PATH": "C:\\path\\to\\your\\Obsidian\\Vault",
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  }
+}
+```
+
+*(On macOS/Linux, set `"command": "python3"`)*
+
+Restart Claude Desktop, and the hammer icon will immediately turn green with all 5 memory tools ready to use.
 
 ---
 
@@ -153,18 +233,19 @@ Obsidian Markdown Vault
          │
     ┌────┴──────────────────────────┐
     ▼                               ▼
-SQLite (FTS5)              Embedding Provider
+SQLite (WAL + FTS5)        Embedding Provider
 Metadata & Keyword         (Ollama / OpenAI / vLLM)
 Search                              │
     │                               ▼
     │                           ChromaDB
     │                           Semantic Vector Search
+    │                               │
     └──────────────┬────────────────┘
                    ▼
          Hybrid Search (RRF)
                    │
                    ▼
-          MEMORA MCP Server
+       MEMORA MCP Server (stdio)
                    │
     ┌──────────────┴──────────────┐
     ▼                             ▼
