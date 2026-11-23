@@ -12,7 +12,7 @@ from memora.config import MemoraConfig
 @pytest.fixture
 def temp_dir():
     """Create a temporary directory."""
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         yield Path(tmp)
 
 

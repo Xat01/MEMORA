@@ -232,6 +232,46 @@ class TestMetadataStore:
         assert chunks[1].chunk_index == 1
         assert chunks[2].chunk_index == 2
 
+    def test_batch_upsert_chunks(self, test_config, temp_dir):
+        """Test batch upserting chunk records in a single transaction."""
+        db_path = temp_dir / "test.db"
+        store = MetadataStore(db_path=db_path)
+
+        records = [
+            ChunkRecord(
+                id=f"batch_chunk_{i}",
+                file_path="batch.md",
+                chunk_index=i,
+                heading_path=f"Batch {i}",
+                start_char=i * 50,
+                end_char=(i + 1) * 50,
+                token_count=12,
+                chunk_hash=f"bhash_{i}",
+                vector_id=f"bvec_{i}",
+                created_at=1000 + i,
+            )
+            for i in range(10)
+        ]
+
+        store.batch_upsert_chunks(records)
+        chunks = store.get_chunks_by_file("batch.md")
+        assert len(chunks) == 10
+        assert chunks[5].id == "batch_chunk_5"
+
+    def test_batch_upsert_fts(self, test_config, temp_dir):
+        """Test batch upserting FTS5 entries in a single transaction."""
+        db_path = temp_dir / "test.db"
+        store = MetadataStore(db_path=db_path)
+
+        fts_entries = [
+            (f"chunk_{i}", f"This is sample text number {i} talking about security", f"Heading {i}", f"file_{i}.md")
+            for i in range(5)
+        ]
+
+        store.batch_upsert_fts(fts_entries)
+        results = store.keyword_search("security", k=10)
+        assert len(results) == 5
+
     def test_delete_chunks_by_file(self, test_config, temp_dir):
         """Test deleting all chunks for a file."""
         db_path = temp_dir / "test.db"

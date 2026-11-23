@@ -70,6 +70,8 @@ class MetadataStore:
     def _init_db(self) -> None:
         """Initialize database schema."""
         with self._conn() as conn:
+            conn.execute("PRAGMA journal_mode = WAL;")
+            conn.execute("PRAGMA synchronous = NORMAL;")
             conn.executescript("""
                 -- Files table: tracks vault files for incremental indexing
                 CREATE TABLE IF NOT EXISTS files (
@@ -192,8 +194,14 @@ class MetadataStore:
 
     def upsert_chunk(self, record: ChunkRecord) -> None:
         """Insert or update a chunk record."""
+        self.batch_upsert_chunks([record])
+
+    def batch_upsert_chunks(self, records: list[ChunkRecord]) -> None:
+        """Insert or update multiple chunk records in a single transaction."""
+        if not records:
+            return
         with self._conn() as conn:
-            conn.execute("""
+            conn.executemany("""
                 INSERT INTO chunks (id, file_path, chunk_index, heading_path, start_char, end_char,
                                    token_count, chunk_hash, vector_id, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -207,9 +215,9 @@ class MetadataStore:
                     chunk_hash=excluded.chunk_hash,
                     vector_id=excluded.vector_id,
                     created_at=excluded.created_at
-            """, (record.id, record.file_path, record.chunk_index, record.heading_path,
-                  record.start_char, record.end_char, record.token_count,
-                  record.chunk_hash, record.vector_id, record.created_at))
+            """, [(r.id, r.file_path, r.chunk_index, r.heading_path,
+                   r.start_char, r.end_char, r.token_count,
+                   r.chunk_hash, r.vector_id, r.created_at) for r in records])
 
     def get_chunk(self, chunk_id: str) -> Optional[ChunkRecord]:
         """Get chunk by ID."""
@@ -242,13 +250,25 @@ class MetadataStore:
 
     def upsert_fts(self, chunk_id: str, content: str, heading_path: str, file_path: str) -> None:
         """Insert or update FTS5 entry for a chunk."""
+        self.batch_upsert_fts([(chunk_id, content, heading_path, file_path)])
+
+    def batch_upsert_fts(self, entries: list[tuple[str, str, str, str]]) -> None:
+        """
+        Insert or update multiple FTS5 entries in a single transaction.
+        entries: list of (chunk_id, content, heading_path, file_path)
+        """
+        if not entries:
+            return
         with self._conn() as conn:
-            # FTS5 doesn't support ON CONFLICT, so delete first then insert
-            conn.execute("DELETE FROM chunks_fts WHERE chunk_id = ?", (chunk_id,))
-            conn.execute("""
+            chunk_ids = [e[0] for e in entries]
+            for i in range(0, len(chunk_ids), 500):
+                batch_ids = chunk_ids[i:i + 500]
+                placeholders = ",".join("?" * len(batch_ids))
+                conn.execute(f"DELETE FROM chunks_fts WHERE chunk_id IN ({placeholders})", batch_ids)
+            conn.executemany("""
                 INSERT INTO chunks_fts (chunk_id, content, heading_path, file_path)
                 VALUES (?, ?, ?, ?)
-            """, (chunk_id, content, heading_path, file_path))
+            """, entries)
 
     def delete_fts(self, chunk_id: str) -> None:
         """Delete FTS5 entry."""

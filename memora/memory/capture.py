@@ -12,7 +12,7 @@ from typing import Optional, List, Dict, Any
 
 from memora.config import get_config
 from memora.embeddings.base import EmbeddingProvider
-from memora.embeddings.ollama_provider import OllamaProvider
+from memora.embeddings import get_default_provider
 from memora.storage.metadata_store import MetadataStore, ChunkRecord, compute_hash, generate_chunk_id
 from memora.storage.vector_store import VectorStore
 from memora.ingestion.chunker import Chunker, TextChunk, chunk_vault_file
@@ -46,7 +46,7 @@ class MemoryCapture:
         self.config = get_config()
         self.metadata_store = metadata_store or MetadataStore()
         self.vector_store = vector_store or VectorStore()
-        self.embedding_provider = embedding_provider or OllamaProvider()
+        self.embedding_provider = embedding_provider or get_default_provider()
         self.chunker = chunker or Chunker()
 
     def memorize(self, content: str, tags: Optional[List[str]] = None,
@@ -97,6 +97,7 @@ class MemoryCapture:
             vector_ids = []
             embeddings = embedding_result.embeddings
 
+            chunk_records = []
             for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
                 vector_id = generate_chunk_id(virtual_path, i)
                 chunk_ids.append(vector_id)
@@ -115,12 +116,12 @@ class MemoryCapture:
                     vector_id=vector_id,
                     created_at=int(time.time() * 1000),
                 )
-                self.metadata_store.upsert_chunk(chunk_record)
+                chunk_records.append(chunk_record)
 
-                # FTS5
-                self.metadata_store.upsert_fts(
-                    vector_id, chunk.text, heading_path, virtual_path
-                )
+            self.metadata_store.batch_upsert_chunks(chunk_records)
+            fts_entries = [(cr.id, chunk.text, heading_path, virtual_path)
+                           for cr, chunk in zip(chunk_records, chunks)]
+            self.metadata_store.batch_upsert_fts(fts_entries)
 
             # Vector store
             tag_str = ",".join(tags) if tags else ""

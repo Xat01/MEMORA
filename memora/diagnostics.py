@@ -300,19 +300,56 @@ class Doctor:
             model=self.config.embedding_model
         )
 
+    def _create_provider(self):
+        """Create configured embedding provider (overridable for testing)."""
+        from memora.embeddings import create_provider
+        provider_name = getattr(self.config, "embedding_provider", "ollama")
+        if provider_name == "ollama":
+            return self._create_ollama_provider()
+        return create_provider(provider_name)
+
     def _check_ollama(self) -> None:
-        """Check Ollama server connectivity."""
+        """Check embedding provider connectivity."""
         if not self.config:
             self.report.add_check(CheckResult(
-                name="Ollama Connectivity",
+                name="Embedding Provider",
                 status=CheckStatus.FAIL,
                 message="Configuration not available",
                 remediation="Fix configuration first"
             ))
             return
 
+        provider_name = getattr(self.config, "embedding_provider", "ollama")
+        if provider_name != "ollama":
+            try:
+                provider = self._create_provider()
+                if provider.health_check():
+                    self.report.add_check(CheckResult(
+                        name="Embedding Provider",
+                        status=CheckStatus.PASS,
+                        message=f"Connected to {provider.provider_name} ({provider.model_name})",
+                        details={"provider": provider.provider_name, "model": provider.model_name}
+                    ))
+                else:
+                    self.report.add_check(CheckResult(
+                        name="Embedding Provider",
+                        status=CheckStatus.FAIL,
+                        message=f"Cannot connect to {provider_name} embedding provider",
+                        details={"provider": provider_name},
+                        remediation="Check EMBEDDING_API_KEY, EMBEDDING_API_BASE, and EMBEDDING_MODEL in .env"
+                    ))
+            except Exception as e:
+                self.report.add_check(CheckResult(
+                    name="Embedding Provider",
+                    status=CheckStatus.FAIL,
+                    message=f"Embedding provider error: {e}",
+                    details={"provider": provider_name, "error": str(e)},
+                    remediation="Check provider settings in .env"
+                ))
+            return
+
         try:
-            provider = self._create_ollama_provider()
+            provider = self._create_provider()
             healthy = provider.health_check()
             if healthy:
                 self.report.add_check(CheckResult(
@@ -349,8 +386,18 @@ class Doctor:
             ))
             return
 
+        provider_name = getattr(self.config, "embedding_provider", "ollama")
+        if provider_name != "ollama":
+            self.report.add_check(CheckResult(
+                name="Embedding Model",
+                status=CheckStatus.PASS,
+                message=f"Model '{self.config.embedding_model}' configured ({self.config.embedding_dimensions}d)",
+                details={"provider": provider_name, "model": self.config.embedding_model, "dimensions": self.config.embedding_dimensions}
+            ))
+            return
+
         try:
-            provider = self._create_ollama_provider()
+            provider = self._create_provider()
             model_info = provider.get_model_info()
             model_name = model_info.get("name", self.config.embedding_model)
 
@@ -566,7 +613,7 @@ class Doctor:
             return
 
         try:
-            provider = self._create_ollama_provider()
+            provider = self._create_provider()
 
             # Test embedding generation
             result = provider.generate_embeddings(["test embedding pipeline"])
