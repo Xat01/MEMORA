@@ -50,7 +50,7 @@ class GetContextParams(BaseModel):
 
 class ListSourcesParams(BaseModel):
     """Parameters for list_sources tool."""
-    limit: int = Field(default=20, description="Maximum sources to list", ge=1, le=100)
+    limit: Optional[int] = Field(default=None, description="Maximum sources to list (default: None for all)", ge=1)
 
 
 class ReindexParams(BaseModel):
@@ -187,7 +187,7 @@ class MemoraMCPServer:
 
         # list_sources tool
         @self.server.tool()
-        async def list_sources(limit: int = 20) -> str:
+        async def list_sources(limit: Optional[int] = None) -> str:
             """List indexed source files."""
             try:
                 sources = self.memory_manager.list_sources(limit=limit)

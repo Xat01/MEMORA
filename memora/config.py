@@ -328,17 +328,14 @@ def create_config_class(project_root: Path):
             # Resolve vault path
             if self.vault_path is not None:
                 resolved = resolve_path(self.vault_path, project_root)
+                self.vault_path = resolved
                 try:
-                    if resolved.exists() and (resolved / ".obsidian").exists():
-                        self.vault_path = resolved
-                    else:
-                        logger.warning(f"Configured vault path not valid: {resolved}")
-                        self.vault_path = None
+                    if not (resolved.exists() and (resolved / ".obsidian").exists()):
+                        logger.warning(f"Configured vault path does not appear to contain .obsidian: {resolved}")
                 except (PermissionError, OSError):
-                    # In restricted or sandboxed environments, preserve the configured path
-                    self.vault_path = resolved
-            # Auto-discover if not set
-            if self.vault_path is None:
+                    pass
+            else:
+                # Auto-discover only if not configured at all
                 vaults = discover_obsidian_vaults()
                 if vaults:
                     self.vault_path = vaults[0]

@@ -11,15 +11,6 @@ from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from memora.config import get_config, MemoraConfig
-from memora.ingestion.indexer import Indexer, create_indexer
-from memora.retrieval.hybrid_search import HybridSearch
-from memora.retrieval.keyword_search import KeywordSearch
-from memora.retrieval.vector_search import VectorSearch
-from memora.storage.metadata_store import MetadataStore
-from memora.storage.vector_store import VectorStore
-from memora.embeddings import create_provider
-from memora.embeddings.base import EmbeddingProvider, EmbeddingResult
-from memora.diagnostics import run_doctor, DoctorReport, CheckStatus
 
 app = typer.Typer(
     name="memora",
@@ -29,8 +20,11 @@ app = typer.Typer(
 console = Console()
 
 
-def _get_embedding_provider(config: MemoraConfig) -> EmbeddingProvider:
+def _get_embedding_provider(config: MemoraConfig):
     """Create the configured embedding provider, with fallback."""
+    from memora.embeddings import create_provider
+    from memora.embeddings.base import EmbeddingProvider, EmbeddingResult
+
     try:
         provider = create_provider(config.embedding_provider)
         if provider.health_check():
@@ -182,6 +176,10 @@ LOG_FILE=./logs/memora.log
 @app.command()
 def status():
     """Show MEMORA index status and configuration."""
+    from memora.storage.metadata_store import MetadataStore
+    from memora.storage.vector_store import VectorStore
+    from memora.ingestion.indexer import Indexer
+
     config = get_config_or_exit()
 
     metadata_store = MetadataStore()
@@ -225,6 +223,8 @@ def ingest(
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
 ):
     """Ingest Obsidian vault into MEMORA (incremental by default)."""
+    from memora.ingestion.indexer import create_indexer
+
     config = get_config_or_exit()
 
     def progress_callback(message: str, current: int, total: int):
@@ -289,6 +289,12 @@ def search(
     tags = [tag] if tag and not isinstance(tag, typer.models.OptionInfo) else None
 
     # Create search components
+    from memora.storage.metadata_store import MetadataStore
+    from memora.storage.vector_store import VectorStore
+    from memora.retrieval.keyword_search import KeywordSearch
+    from memora.retrieval.vector_search import VectorSearch
+    from memora.retrieval.hybrid_search import HybridSearch
+
     metadata_store = MetadataStore(db_path=config.sqlite_path)
     vector_store = VectorStore(persist_path=str(config.chroma_path))
     keyword_search = KeywordSearch(metadata_store=metadata_store)
@@ -360,6 +366,7 @@ def check_provider():
     ) as progress:
         task = progress.add_task("Connecting...", total=None)
         try:
+            from memora.embeddings import create_provider
             provider = create_provider(config.embedding_provider)
             healthy = provider.health_check()
         except Exception as e:
@@ -467,6 +474,8 @@ def doctor(
     json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON"),
 ):
     """Run system diagnostics to verify MEMORA installation and configuration."""
+    from memora.diagnostics import run_doctor
+
     try:
         config = get_config()
     except Exception as e:

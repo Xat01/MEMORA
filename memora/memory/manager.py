@@ -133,9 +133,12 @@ class MemoryManager:
             "message": f"Retrieved {len(chunks_used)} relevant chunks",
         }
 
-    def list_sources(self, limit: int = 20) -> List[Dict[str, Any]]:
+    def list_sources(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """
         List indexed source files.
+
+        Args:
+            limit: Maximum sources to return (None for all sources)
 
         Returns:
             List of file info dicts
@@ -146,8 +149,9 @@ class MemoryManager:
         # Sort by indexed_at descending
         files.sort(key=lambda f: f.indexed_at, reverse=True)
 
+        selected_files = files if limit is None else files[:limit]
         sources = []
-        for f in files[:limit]:
+        for f in selected_files:
             chunks = self.indexer.metadata_store.get_chunks_by_file(f.path)
             sources.append({
                 "path": f.path,
